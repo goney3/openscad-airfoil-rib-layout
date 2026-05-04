@@ -1,0 +1,836 @@
+// Parametric_Airfoil_Layout_Tool.scad
+// 2D/3D Aircraft Rib Template Generator (Inches)
+
+/*[Output Settings] */
+// 1 = 3D Preview (Formed Part), 2 = 3D Preview (Flat Pattern), 3 = 2D DXF Export (Pure 2D)
+render_mode = 1; //[1:3D Preview (Formed Part), 2:3D Preview (Flat Pattern), 3:2D DXF Export (Pure 2D)]
+
+/*[Forming Selection] */
+// 1 = Lightening Holes (Standard), 2 = Stamped Truss (Reinforced)
+forming_mode = 1; //[1:Lightening Holes, 2:Stamped Truss]
+
+/*[Airfoil Selection] */
+// Select the airfoil profile to use
+airfoil_selection = "UAK02"; //[NACA0010, NACA0012, NACA2412, NACA4412, Clark-Y, UAK02, UAK04, Custom]
+
+/*[Custom NACA Settings] */
+// Only used if 'Custom' is selected above
+custom_camber_percent = 4; //[0.00:0.01:15.00]
+custom_camber_position = 40; //[0.00:0.01:90.00]
+custom_thickness_percent = 18; //[1.00:0.01:40.00]
+custom_thickness_position = 30; //[10.00:0.01:90.00]
+
+/*[Flanging Die Sizes to Use (Inches)] */
+// List the exact CUT diameters of the flanging dies you own/plan to make
+available_cut_dies =[2.0, 3.0, 4.0, 5.0];
+
+/*[Rib Dimensions (Inches)] */
+// Total chord length of the airfoil
+chord_length = 51.0;
+// Metal thickness (e.g., 0.016, 0.020, 0.025)
+metal_thickness = 0.016; //[0.001:0.001:0.250]
+// Width of the flange added around the perimeter and along spars
+flange_length = 0.75;
+
+/*[Spar Positions] */
+// Main spar position (fraction of chord)
+spar_position = 0.25; //[0.1:0.01:0.9]
+// Trailing spar position (fraction of chord)
+trailing_spar_position = 0.75; //[0.1:0.01:0.9]
+
+/*[Section Visibility] */
+show_leading = true;
+show_middle = true;
+show_trailing = true;
+// Distance to separate sections (Set to 0 to see perfect alignment)
+explode_distance = 2.0; //[0:0.1:10]
+
+/*[Truss Settings] */
+// Width of the flat top of the truss (Blue area)
+truss_width = 0.75;
+// Depth of the flange bent down around the cutouts (Red area)
+truss_flange_depth = 0.25;
+// Corner roundness for the cutouts (Must be >= truss_flange_depth)
+truss_corner_roundness = 0.375;
+// Number of diagonal trusses in the Leading Edge section
+leading_truss_count = 2;
+// Number of diagonal trusses in the Middle section
+middle_truss_count = 4;
+// Number of diagonal trusses in the Trailing Edge section
+trailing_truss_count = 1;
+
+/*[Lightening Holes (Inches)] */
+// 1 = Circular, 2 = Stadium (Straight Edges), 3 = True Oval (Elliptical)
+hole_shape = 1; //[1:Circular, 2:Stadium, 3:True Oval]
+// 1 = Horizontal, 2 = Vertical (Only applies if Stadium or Oval is selected)
+oval_orientation = 1; //[1:Horizontal, 2:Vertical]
+// Stretch factor for oval holes (e.g., 1.5 = 50% longer)
+oval_stretch = 1.5; //[1.0:0.1:3.0]
+// Maximum allowable FINAL diameter of holes (after flanging)
+hole_diameter = 12.0;
+// Depth of the flanged lip (subtracted from cut diameter to leave material for the die)
+hole_flange_depth = 0.25;
+// Minimum allowable CUT diameter of holes (Required for your flanging dies)
+min_hole_diameter = 2.0;
+// Number of holes in the Leading Edge section
+leading_hole_count = 2;
+// Number of holes in the Middle section
+middle_hole_count = 4;
+// Number of holes in the Trailing Edge section
+trailing_hole_count = 1;
+// Minimum web distance from holes to edges/flanges (Top, Bottom, and Spars)
+edge_margin = 0.5;
+
+/*[Bead Rolling (Inches)] */
+// Width of the vertical bead lines (automatically placed perfectly between holes)
+bead_width = 0.25; //[0.001:0.001:2.000]
+// 1 = Stencil Cut (0.01" slit for DXF), 2 = None
+bead_mode = 1; //[1:Stencil Cut, 2:None]
+
+/*[Bend Relief (Inches)] */
+// Width of the triangular notch at the outer edge
+gap_width = 0.25;
+// Depth of the triangular notch into the flange
+gap_depth = 0.5;
+// Diameter of the stress relief hole at the apex of the notch (Crucial for 6061-T6)
+stress_relief_hole = 0.125;
+// Horizontal distance between bend relief notches along the aerodynamic curve
+gap_spacing = 2.0;
+
+/* [Hidden] */
+// $fn sets the resolution of the model/pattern
+$fn = 150;
+min_structural_dia = min_hole_diameter + (2 * hole_flange_depth);
+
+// ==========================================
+// AIRFOIL DATA & GENERATORS
+// ==========================================
+// --- NACA 4-Digit Math Helpers ---
+function naca4_u(x, xt) = (xt == 0) ? x : (x <= xt) ? x * (0.3 / xt) : 0.3 + (x - xt) * (0.7 / (1 - xt));
+function naca4_yt(x, t, xt) = let(u = naca4_u(x, xt)) 5 * t * (0.2969 * sqrt(max(0,u)) - 0.1260 * u - 0.3516 * pow(u, 2) + 0.2843 * pow(u, 3) - 0.1015 * pow(u, 4));
+function naca4_yc(x, m, p) = (p == 0 || m == 0) ? 0 : (x < p) ? (m / pow(p, 2)) * (2 * p * x - pow(x, 2)) : (m / pow(1 - p, 2)) * ((1 - 2 * p) + 2 * p * x - pow(x, 2));
+function naca4_dyc(x, m, p) = (p == 0 || m == 0) ? 0 : (x < p) ? (2 * m / pow(p, 2)) * (p - x) : (2 * m / pow(1 - p, 2)) * (p - x);
+function naca4_upper(x, m, p, t, xt) = let(yt = naca4_yt(x, t, xt), yc = naca4_yc(x, m, p), theta = atan(naca4_dyc(x, m, p)))[x - yt * sin(theta), yc + yt * cos(theta)];
+function naca4_lower(x, m, p, t, xt) = let(yt = naca4_yt(x, t, xt), yc = naca4_yc(x, m, p), theta = atan(naca4_dyc(x, m, p)))[x + yt * sin(theta), yc - yt * cos(theta)];
+
+// Generator for NACA 4-digit profiles
+function generate_naca4(m_pct, p_pct, t_pct, xt_pct) =
+let(m = m_pct/100, p = p_pct/100, t = t_pct/100, xt = xt_pct/100, n = 100)
+let(beta =[for (i=[0:n]) i * 180 / n])
+let(x_pts =[for (b=beta) (1 - cos(b)) / 2])
+concat([for (i=[0:n]) naca4_upper(x_pts[n-i], m, p, t, xt)],[for (i=[1:n]) naca4_lower(x_pts[i], m, p, t, xt)]
+);
+
+// --- Coordinate-Based Airfoils (Normalized 0 to 1) ---
+// Format: [x, y]
+clark_y_pts = [[1.0000000, 0.0006000],[0.9951466, 0.0017521],[0.9867690, 0.0037327],[0.9771040, 0.0060146],[0.9663947, 0.0085336],[0.9548958, 0.0112011],[0.9429456, 0.0139478],[0.9308083, 0.0167029],[0.9185624, 0.0194386],[0.9062182, 0.0221488],[0.8938074, 0.0248383],[0.8813940, 0.0274944],[0.8689784, 0.0301067],[0.8565361, 0.0326838],[0.8440888, 0.0352244],[0.8316487, 0.0377214],[0.8192024, 0.0401760],[0.8067461, 0.0425901],[0.7942868, 0.0449629],[0.7818328, 0.0472912],[0.7693804, 0.0495726],[0.7569210, 0.0518082],[0.7444545, 0.0539986],[0.7319830, 0.0561433],[0.7195062, 0.0582422],[0.7070234, 0.0602952],[0.6945378, 0.0623025],[0.6820580, 0.0642616],[0.6695906, 0.0661688],[0.6571344, 0.0680213],[0.6446817, 0.0698184],[0.6322479, 0.0715581],[0.6198529, 0.0732294],[0.6074546, 0.0748290],[0.5950303, 0.0763695],[0.5826301, 0.0778461],[0.5702517, 0.0792460],[0.5578526, 0.0805754],[0.5454426, 0.0818382],[0.5330305, 0.0830310],[0.5206019, 0.0841571],[0.5081729, 0.0852191],[0.4957681, 0.0862097],[0.4833826, 0.0871237],[0.4710020, 0.0879603],[0.4586240, 0.0887209],[0.4462704, 0.0894045],[0.4339560, 0.0900024],[0.4216697, 0.0905085],[0.4093965, 0.0909196],[0.3971232, 0.0912355],[0.3848372, 0.0914577],[0.3725360, 0.0915889],[0.3602212, 0.0916301],[0.3478742, 0.0915826],[0.3354879, 0.0914548],[0.3230898, 0.0912523],[0.3106812, 0.0909739],[0.2982600, 0.0906280],[0.2859002, 0.0902215],[0.2736659, 0.0897387],[0.2615646, 0.0891626],[0.2496129, 0.0884790],[0.2378244, 0.0876692],[0.2261786, 0.0867143],[0.2146632, 0.0856038],[0.2032857, 0.0843259],[0.1920242, 0.0828619],[0.1808307, 0.0812014],[0.1696699, 0.0793414],[0.1585388, 0.0772898],[0.1474785, 0.0750605],[0.1365334, 0.0726564],[0.1257258, 0.0700756],[0.1150946, 0.0673218],[0.1046945, 0.0644003],[0.0945421, 0.0613040],[0.0846456, 0.0580426],[0.0751180, 0.0546778],[0.0661509, 0.0512713],[0.0578913, 0.0478603],[0.0503982, 0.0444698],[0.0436663, 0.0411099],[0.0376712, 0.0378095],[0.0323895, 0.0345949],[0.0277726, 0.0314720],[0.0237440, 0.0284553],[0.0202242, 0.0255631],[0.0171371, 0.0228089],[0.0144126, 0.0202298],[0.0120032, 0.0178632],[0.0098753, 0.0157167],[0.0080100, 0.0137509],[0.0063810, 0.0119226],[0.0049653, 0.0101995],[0.0037414, 0.0085586],[0.0026937, 0.0069827],[0.0018154, 0.0054584],[0.0011031, 0.0039757],[0.0005587, 0.0025258],[0.0001796, 0.0011140],[-0.0000253, -0.0002619],[-0.0000532, -0.0016297],[0.0000901, -0.0030060],[0.0004122, -0.0043915],[0.0009256, -0.0057733],[0.0016143, -0.0071541],[0.0024697, -0.0085325],[0.0034929, -0.0099042],[0.0046837, -0.0112692],[0.0060474, -0.0126254],[0.0075958, -0.0139676],[0.0093408, -0.0152881],[0.0113056, -0.0165669],[0.0135263, -0.0177740],[0.0160440, -0.0188946],[0.0189049, -0.0199278],[0.0221687, -0.0208784],[0.0259327, -0.0217716],[0.0303227, -0.0226745],[0.0354224, -0.0236767],[0.0412531, -0.0247366],[0.0478700, -0.0257632],[0.0553821, -0.0266809],[0.0638993, -0.0274554],[0.0735012, -0.0281014],[0.0841010, -0.0286712],[0.0953369, -0.0291934],[0.1068963, -0.0296185],[0.1187244, -0.0299325],[0.1307532, -0.0301458],[0.1428902, -0.0302570],[0.1551339, -0.0302692],[0.1674880, -0.0301974],[0.1799151, -0.0300512],[0.1923941, -0.0298346],[0.2049382, -0.0295507],[0.2175776, -0.0292098],[0.2302931, -0.0288310],[0.2430397, -0.0284184],[0.2558276, -0.0279715],[0.2686789, -0.0274982],[0.2815898, -0.0270095],[0.2945313, -0.0265172],[0.3074820, -0.0260281],[0.3204429, -0.0255435],[0.3334089, -0.0250626],[0.3463765, -0.0245866],[0.3593534, -0.0241136],[0.3723403, -0.0236397],[0.3853325, -0.0231653],[0.3983273, -0.0226910],[0.4113223, -0.0222168],[0.4243149, -0.0217424],[0.4373029, -0.0212683],[0.4502813, -0.0207955],[0.4632492, -0.0203205],[0.4762176, -0.0198405],[0.4891834, -0.0193590],[0.5021302, -0.0188821],[0.5150601, -0.0184110],[0.5279817, -0.0179348],[0.5408993, -0.0174570],[0.5538174, -0.0169860],[0.5667395, -0.0165113],[0.5796698, -0.0160322],[0.5926172, -0.0155583],[0.6055779, -0.0150873],[0.6185277, -0.0146142],[0.6314589, -0.0141355],[0.6443799, -0.0136597],[0.6572949, -0.0131892],[0.6702056, -0.0127123],[0.6831142, -0.0122359],[0.6960220, -0.0117657],[0.7089290, -0.0112898],[0.7218361, -0.0108126],[0.7347437, -0.0103423],[0.7476521, -0.0098672],[0.7605623, -0.0093893],[0.7734764, -0.0089184],[0.7863962, -0.0084440],[0.7993250, -0.0079649],[0.8122710, -0.0074909],[0.8252310, -0.0070200],[0.8381802, -0.0065470],[0.8511098, -0.0060685],[0.8640271, -0.0055926],[0.8769343, -0.0051224],[0.8898289, -0.0046463],[0.9027048, -0.0041708],[0.9155481, -0.0037030],[0.9283218, -0.0032323],[0.9409624, -0.0027647],[0.9533709, -0.0023122],[0.9653133, -0.0018740],[0.9764289, -0.0014611],[0.9863955, -0.0010997],[0.9950128, -0.0007865],[1.0000000, -0.0006000]];
+uak02_pts = [[1.0000000, 0.0000000],[0.9997452, 0.0000592],[0.9990179, 0.0002282],[0.9978678, 0.0004955],[0.9963155, 0.0008563],[0.9943750, 0.0013072],[0.9920572, 0.0018453],[0.9893712, 0.0024681],[0.9863245, 0.0031734],[0.9829238, 0.0039591],[0.9791749, 0.0048236],[0.9750832, 0.0057660],[0.9706540, 0.0067859],[0.9658931, 0.0078834],[0.9608064, 0.0090583],[0.9554000, 0.0103109],[0.9496800, 0.0116412],[0.9436530, 0.0130497],[0.9373256, 0.0145373],[0.9307058, 0.0161051],[0.9238023, 0.0177538],[0.9166246, 0.0194835],[0.9091823, 0.0212937],[0.9014858, 0.0231838],[0.8935462, 0.0251526],[0.8853756, 0.0271974],[0.8769862, 0.0293140],[0.8683897, 0.0314965],[0.8595963, 0.0337377],[0.8506150, 0.0360301],[0.8414537, 0.0383663],[0.8321196, 0.0407390],[0.8226192, 0.0431405],[0.8129579, 0.0455636],[0.8031398, 0.0480015],[0.7931687, 0.0504485],[0.7830480, 0.0529001],[0.7727815, 0.0553524],[0.7623729, 0.0578019],[0.7518263, 0.0602457],[0.7411451, 0.0626812],[0.7303327, 0.0651066],[0.7193926, 0.0675217],[0.7083291, 0.0699275],[0.6971481, 0.0723256],[0.6858565, 0.0747182],[0.6744627, 0.0771072],[0.6629764, 0.0794944],[0.6514085, 0.0818812],[0.6397712, 0.0842679],[0.6280773, 0.0866537],[0.6163403, 0.0890366],[0.6045740, 0.0914132],[0.5927927, 0.0937787],[0.5810105, 0.0961264],[0.5692408, 0.0984477],[0.5574964, 0.1007317],[0.5457878, 0.1029652],[0.5341223, 0.1051323],[0.5225008, 0.1072164],[0.5109175, 0.1092040],[0.4993618, 0.1110897],[0.4878249, 0.1128781],[0.4763056, 0.1145809],[0.4648134, 0.1162098],[0.4533651, 0.1177700],[0.4419782, 0.1192582],[0.4306665, 0.1206649],[0.4194381, 0.1219787],[0.4082966, 0.1231891],[0.3972434, 0.1242880],[0.3862777, 0.1252688],[0.3753981, 0.1261274],[0.3646024, 0.1268620],[0.3538887, 0.1274735],[0.3432564, 0.1279650],[0.3327075, 0.1283412],[0.3222462, 0.1286068],[0.3118792, 0.1287655],[0.3016141, 0.1288184],[0.2914574, 0.1287639],[0.2814127, 0.1285998],[0.2714807, 0.1283255],[0.2616614, 0.1279441],[0.2519571, 0.1274615],[0.2423731, 0.1268846],[0.2329176, 0.1262186],[0.2235994, 0.1254669],[0.2144268, 0.1246318],[0.2054089, 0.1237151],[0.1965553, 0.1227180],[0.1878763, 0.1216393],[0.1793813, 0.1204756],[0.1710778, 0.1192218],[0.1629707, 0.1178719],[0.1550622, 0.1164197],[0.1473513, 0.1148606],[0.1398349, 0.1131938],[0.1325114, 0.1114223],[0.1253827, 0.1095512],[0.1184547, 0.1075834],[0.1117338, 0.1055177],[0.1052236, 0.1033491],[0.0989225, 0.1010728],[0.0928255, 0.0986866],[0.0869268, 0.0961928],[0.0812217, 0.0935967],[0.0757085, 0.0909057],[0.0703879, 0.0881269],[0.0652619, 0.0852656],[0.0603323, 0.0823262],[0.0556006, 0.0793125],[0.0510680, 0.0762287],[0.0467360, 0.0730782],[0.0426055, 0.0698634],[0.0386759, 0.0665863],[0.0349448, 0.0632502],[0.0314099, 0.0598597],[0.0280697, 0.0564198],[0.0249219, 0.0529346],[0.0219616, 0.0494083],[0.0191813, 0.0458487],[0.0165741, 0.0422692],[0.0141391, 0.0386873],[0.0118814, 0.0351187],[0.0098091, 0.0315736],[0.0079280, 0.0280579],[0.0062394, 0.0245769],[0.0047427, 0.0211392],[0.0034385, 0.0177566],[0.0023305, 0.0144425],[0.0014252, 0.0112093],[0.0007312, 0.0080675],[0.0002573, 0.0050253],[0.0000114, 0.0020896],[0.0000000, -0.0007327],[0.0002297, -0.0034326],[0.0007098, -0.0059993],[0.0014545, -0.0084225],[0.0024824, -0.0106964],[0.0038130, -0.0128216],[0.0054635, -0.0148049],[0.0074458, -0.0166568],[0.0097667, -0.0183876],[0.0124302, -0.0200050],[0.0154410, -0.0215147],[0.0188058, -0.0229230],[0.0225324, -0.0242402],[0.0266255, -0.0254805],[0.0310851, -0.0266605],[0.0359065, -0.0277962],[0.0410806, -0.0289020],[0.0465958, -0.0299898],[0.0524376, -0.0310687],[0.0585901, -0.0321439],[0.0650380, -0.0332165],[0.0717675, -0.0342853],[0.0787671, -0.0353476],[0.0860262, -0.0364008],[0.0935347, -0.0374423],[0.1012821, -0.0384683],[0.1092589, -0.0394732],[0.1174575, -0.0404506],[0.1258729, -0.0413938],[0.1345019, -0.0422981],[0.1433417, -0.0431609],[0.1523886, -0.0439809],[0.1616377, -0.0447568],[0.1710841, -0.0454868],[0.1807242, -0.0461687],[0.1905555, -0.0468025],[0.2005747, -0.0473904],[0.2107752, -0.0479365],[0.2211467, -0.0484435],[0.2316773, -0.0489093],[0.2423579, -0.0493279],[0.2531844, -0.0496927],[0.2641565, -0.0500006],[0.2752733, -0.0502538],[0.2865302, -0.0504564],[0.2979191, -0.0506117],[0.3094311, -0.0507201],[0.3210586, -0.0507804],[0.3327955, -0.0507913],[0.3446369, -0.0507526],[0.3565779, -0.0506655],[0.3686129, -0.0505324],[0.3807349, -0.0503562],[0.3929353, -0.0501398],[0.4052047, -0.0498848],[0.4175332, -0.0495908],[0.4299124, -0.0492565],[0.4423356, -0.0488800],[0.4547975, -0.0484608],[0.4672935, -0.0479997],[0.4798187, -0.0474996],[0.4923670, -0.0469645],[0.5049307, -0.0463998],[0.5174990, -0.0458109],[0.5300586, -0.0452009],[0.5425955, -0.0445696],[0.5550972, -0.0439133],[0.5675547, -0.0432269],[0.5799618, -0.0425063],[0.5923138, -0.0417494],[0.6046060, -0.0409557],[0.6168331, -0.0401255],[0.6289894, -0.0392594],[0.6410694, -0.0383578],[0.6530678, -0.0374216],[0.6649797, -0.0364520],[0.6768003, -0.0354508],[0.6885248, -0.0344208],[0.7001476, -0.0333654],[0.7116625, -0.0322881],[0.7230629, -0.0311922],[0.7343418, -0.0300809],[0.7454926, -0.0289572],[0.7565086, -0.0278243],[0.7673832, -0.0266858],[0.7781094, -0.0255456],[0.7886796, -0.0244082],[0.7990851, -0.0232778],[0.8093165, -0.0221576],[0.8193648, -0.0210496],[0.8292213, -0.0199558],[0.8388782, -0.0188779],[0.8483271, -0.0178182],[0.8575595, -0.0167783],[0.8665671, -0.0157594],[0.8753419, -0.0147621],[0.8838765, -0.0137872],[0.8921639, -0.0128353],[0.9001971, -0.0119073],[0.9079694, -0.0110038],[0.9154745, -0.0101252],[0.9227067, -0.0092721],[0.9296611, -0.0084460],[0.9363318, -0.0076493],[0.9427122, -0.0068841],[0.9487954, -0.0061520],[0.9545749, -0.0054537],[0.9600451, -0.0047903],[0.9652006, -0.0041637],[0.9700350, -0.0035770],[0.9745400, -0.0030325],[0.9787071, -0.0025307],[0.9825286, -0.0020710],[0.9859985, -0.0016527],[0.9891112, -0.0012770],[0.9918598, -0.0009464],[0.9942347, -0.0006635],[0.9962247, -0.0004300],[0.9978167, -0.0002464],[0.9989952, -0.0001126],[0.9997395, -0.0000291],[1.0000000, 0.0000000]];
+uak04_pts = [[1.0000000, 0.0015300],[0.9871193, 0.0040048],[0.9691947, 0.0074901],[0.9443166, 0.0124007],[0.9191964, 0.0174358],[0.8943503, 0.0224811],[0.8697843, 0.0275224],[0.8455038, 0.0325461],[0.8215143, 0.0375391],[0.7978212, 0.0424886],[0.7744294, 0.0473823],[0.7513439, 0.0522084],[0.7285695, 0.0569553],[0.7061108, 0.0616122],[0.6839720, 0.0661684],[0.6621575, 0.0706140],[0.6406713, 0.0749393],[0.6195172, 0.0791350],[0.5986990, 0.0831923],[0.5782202, 0.0871031],[0.5580842, 0.0908593],[0.5382940, 0.0944536],[0.5188528, 0.0978789],[0.4997633, 0.1011287],[0.4810282, 0.1041969],[0.4626500, 0.1070778],[0.4446310, 0.1097662],[0.4269733, 0.1122573],[0.4096788, 0.1145467],[0.3927494, 0.1166306],[0.3761867, 0.1185055],[0.3599920, 0.1201684],[0.3441667, 0.1216167],[0.3287119, 0.1228483],[0.3136283, 0.1238615],[0.2989169, 0.1246550],[0.2845780, 0.1252281],[0.2706122, 0.1255804],[0.2570197, 0.1257119],[0.2438004, 0.1256232],[0.2309543, 0.1253153],[0.2184810, 0.1247896],[0.2063800, 0.1240478],[0.1946507, 0.1230924],[0.1832923, 0.1219260],[0.1723037, 0.1205518],[0.1616838, 0.1189735],[0.1514313, 0.1171950],[0.1415444, 0.1152210],[0.1320217, 0.1130563],[0.1228612, 0.1107064],[0.1140608, 0.1081770],[0.1056183, 0.1054745],[0.0975313, 0.1026055],[0.0897973, 0.0995773],[0.0824134, 0.0963974],[0.0753768, 0.0930738],[0.0686844, 0.0896151],[0.0623329, 0.0860302],[0.0563188, 0.0823284],[0.0506385, 0.0785196],[0.0452882, 0.0746140],[0.0402640, 0.0706223],[0.0355617, 0.0665557],[0.0311770, 0.0624257],[0.0271054, 0.0582443],[0.0233423, 0.0540241],[0.0198827, 0.0497779],[0.0167216, 0.0455191],[0.0138540, 0.0412615],[0.0112743, 0.0370192],[0.0089772, 0.0328071],[0.0069567, 0.0286402],[0.0052072, 0.0245340],[0.0037225, 0.0205047],[0.0024963, 0.0165685],[0.0015223, 0.0127425],[0.0007939, 0.0090439],[0.0003163, 0.0056018],[0.0000710, 0.0026046],[0.0000000, 0.0000000],[0.0000572, -0.0021735],[0.0002505, -0.0044129],[0.0006180, -0.0067037],[0.0011653, -0.0088927],[0.0018801, -0.0109140],[0.0027603, -0.0127798],[0.0038042, -0.0145020],[0.0050106, -0.0160921],[0.0063786, -0.0175612],[0.0079081, -0.0189197],[0.0095993, -0.0201779],[0.0114530, -0.0213454],[0.0134703, -0.0224316],[0.0156529, -0.0234452],[0.0180032, -0.0243947],[0.0205237, -0.0252881],[0.0232176, -0.0261328],[0.0260887, -0.0269361],[0.0291410, -0.0277044],[0.0323792, -0.0284442],[0.0358085, -0.0291611],[0.0394344, -0.0298605],[0.0432631, -0.0305474],[0.0473012, -0.0312262],[0.0515558, -0.0319010],[0.0560344, -0.0325754],[0.0607452, -0.0332525],[0.0656967, -0.0339352],[0.0708979, -0.0346256],[0.0763584, -0.0353258],[0.0820882, -0.0360371],[0.0880978, -0.0367606],[0.0943983, -0.0374967],[0.1010011, -0.0382457],[0.1079182, -0.0390072],[0.1151621, -0.0397804],[0.1227457, -0.0405643],[0.1306826, -0.0413572],[0.1389866, -0.0421570],[0.1476722, -0.0429613],[0.1567543, -0.0437671],[0.1662483, -0.0445711],[0.1761702, -0.0453695],[0.1865362, -0.0461581],[0.1973633, -0.0469322],[0.2086689, -0.0476867],[0.2204707, -0.0484161],[0.2327872, -0.0491144],[0.2456372, -0.0497753],[0.2590400, -0.0503918],[0.2730154, -0.0509566],[0.2875838, -0.0514622],[0.3027658, -0.0519004],[0.3185829, -0.0522625],[0.3350567, -0.0525395],[0.3522095, -0.0527220],[0.3700642, -0.0528002],[0.3886438, -0.0527636],[0.4079722, -0.0526016],[0.4280736, -0.0523029],[0.4489726, -0.0518558],[0.4706945, -0.0512485],[0.4932649, -0.0504682],[0.5167101, -0.0495022],[0.5410566, -0.0483370],[0.5663317, -0.0469588],[0.5925629, -0.0453533],[0.6197785, -0.0435060],[0.6480070, -0.0414017],[0.6772775, -0.0390247],[0.7076197, -0.0363593],[0.7390636, -0.0333888],[0.7716398, -0.0300966],[0.8053794, -0.0264652],[0.8403139, -0.0224770],[0.8764754, -0.0181137],[0.9138964, -0.0133568],[0.9518227, -0.0082949],[0.9796904, -0.0044264],[1.0000000, -0.0015300]];
+
+// --- Master Selection Logic ---
+function get_airfoil_points(selection) =
+(selection == "NACA0010") ? generate_naca4(0, 0, 10, 30) :
+(selection == "NACA0012") ? generate_naca4(0, 0, 12, 30) :
+(selection == "NACA2412") ? generate_naca4(2, 40, 12, 30) :
+(selection == "NACA4412") ? generate_naca4(4, 40, 12, 30) :
+(selection == "Clark-Y")   ? clark_y_pts :
+(selection == "UAK02")     ? uak02_pts :
+(selection == "UAK04")     ? uak04_pts :
+generate_naca4(custom_camber_percent, custom_camber_position, custom_thickness_percent, custom_thickness_position);
+
+// Final point set used by the rest of the script
+airfoil_points = get_airfoil_points(airfoil_selection);
+
+// ==========================================
+// STRICT 6061-T6 SAFETY VALIDATION CHECKS
+// ==========================================
+assert(hole_flange_depth <= metal_thickness * 20,
+str("CRITICAL ERROR: Flange depth of ", hole_flange_depth, "\" exceeds 20t limit for 45-degree 6061-T6. Metal will thin and crack at the bend radius. Max allowed depth is ", metal_thickness * 20, "\".")
+);
+assert(max(available_cut_dies) <= metal_thickness * 400,
+str("CRITICAL ERROR: A die size of ", max(available_cut_dies), "\" exceeds the global stability limit for ", metal_thickness, "\" metal. Max allowed hole is ", metal_thickness * 400, "\".")
+);
+actual_flat_margin = edge_margin - (bead_width / 2);
+assert(actual_flat_margin >= 0.375,
+str("CRITICAL ERROR: Flat margin between bead and flange is only ", actual_flat_margin, "\". It must be at least 0.375\" to prevent overlapping work-hardened zones in 6061-T6. Increase 'edge_margin' or decrease 'bead_width'.")
+);
+assert(truss_corner_roundness >= truss_flange_depth,
+str("CRITICAL ERROR: truss_corner_roundness (", truss_corner_roundness, ") must be >= truss_flange_depth (", truss_flange_depth, ") to prevent sharp corners in the flat pattern.")
+);
+
+module visual_warnings() {
+for (die = available_cut_dies) {
+horizontal_reach = hole_flange_depth * 0.7071;
+d_final = (die + 2 * hole_flange_depth) - (2 * horizontal_reach);
+stretch_pct = (d_final - die) / die;
+if (stretch_pct > 0.08) {
+echo(str("<color=red>CRITICAL WARNING: Die size ", die, "\" requires ", round(stretch_pct*100), "% stretch at 45 degrees. 6061-T6 WILL SPLIT! Max stretch is 8%.</color>"));
+if (render_mode == 1 || render_mode == 2) {
+color("red")
+translate([chord_length/4, chord_length/4, 2])
+linear_extrude(0.1)
+text(str("WARNING: ", die, "\" DIE WILL SPLIT T6!"), size=1.5, halign="center");
+}
+}
+}
+}
+visual_warnings();
+
+// ==========================================
+// MAIN EXECUTION PIPELINE
+// ==========================================
+spar1 = spar_position * chord_length;
+spar2 = trailing_spar_position * chord_length;
+end_tip = chord_length;
+
+if (render_mode == 1) {
+if (show_leading) translate([-explode_distance, 0, 0]) build_section_3d(0, spar1, leading_hole_count, "ascending", leading_truss_count);
+if (show_middle) translate([0, 0, 0]) build_section_3d(spar1, spar2, middle_hole_count, "descending", middle_truss_count);
+if (show_trailing) translate([explode_distance, 0, 0]) build_section_3d(spar2, end_tip, trailing_hole_count, "descending", trailing_truss_count);
+} else if (render_mode == 2) {
+color("silver") linear_extrude(metal_thickness) {
+if (show_leading) translate([-explode_distance, 0]) build_section_2d_export(0, spar1, leading_hole_count, "ascending", leading_truss_count);
+if (show_middle) translate([0, 0]) build_section_2d_export(spar1, spar2, middle_hole_count, "descending", middle_truss_count);
+if (show_trailing) translate([explode_distance, 0]) build_section_2d_export(spar2, end_tip, trailing_hole_count, "descending", trailing_truss_count);
+}
+} else {
+projection(cut=false) {
+if (show_leading) translate([-explode_distance, 0]) build_section_2d_export(0, spar1, leading_hole_count, "ascending", leading_truss_count);
+if (show_middle) translate([0, 0]) build_section_2d_export(spar1, spar2, middle_hole_count, "descending", middle_truss_count);
+if (show_trailing) translate([explode_distance, 0]) build_section_2d_export(spar2, end_tip, trailing_hole_count, "descending", trailing_truss_count);
+}
+}
+
+// ==========================================
+// CORE MODULES
+// ==========================================
+module airfoil_polygon() {
+scale([chord_length, chord_length]) polygon(points=airfoil_points);
+}
+
+module web_2d(start_x, end_x) {
+intersection() {
+airfoil_polygon();
+box_start = (start_x <= 0) ? -chord_length : start_x;
+box_end = (end_x >= chord_length) ? chord_length * 2 : end_x;
+translate([box_start, -chord_length])
+square([box_end - box_start, chord_length * 2]);
+}
+}
+
+module section_flanged(start_x, end_x) {
+intersection() {
+offset(delta=flange_length) airfoil_polygon();
+box_start = (start_x <= 0) ? -chord_length : start_x - flange_length;
+box_end = (end_x >= chord_length) ? chord_length * 2 : end_x + flange_length;
+translate([box_start, -chord_length])
+square([box_end - box_start, chord_length * 2]);
+}
+}
+
+module build_section_2d(start_x, end_x, section_hole_count, progression, truss_count) {
+if (forming_mode == 1) {
+// Standard Lightening Holes Mode
+difference() {
+section_flanged(start_x, end_x);
+place_holes_2d_flat(start_x, end_x, section_hole_count, progression);
+relief_gaps_cuts(start_x, end_x);
+}
+} else if (forming_mode == 2) {
+// Stamped Truss Mode: Subtract the flat cutouts from the web
+difference() {
+section_flanged(start_x, end_x);
+flat_cutouts(start_x, end_x, truss_count);
+relief_gaps_cuts(start_x, end_x);
+}
+}
+}
+
+module build_section_2d_export(start_x, end_x, section_hole_count, progression, truss_count) {
+difference() {
+build_section_2d(start_x, end_x, section_hole_count, progression, truss_count);
+if (forming_mode == 1 && bead_mode == 1) {
+bead_lines_2d_stencil(start_x, end_x, section_hole_count, progression);
+}
+}
+}
+
+module build_section_3d(start_x, end_x, section_hole_count, progression, truss_count) {
+    union() {
+        difference() {
+            union() {
+                // 1. THE BASE WEB
+                linear_extrude(metal_thickness) {
+                    difference() {
+                        web_2d(start_x, end_x);
+                        if (forming_mode == 1) {
+                            place_holes_3d_formed(start_x, end_x, section_hole_count, progression);
+                        }
+                        if (forming_mode == 2) {
+                            die_cutouts(start_x, end_x, truss_count);
+                        }
+                    }
+                }
+                // 2. THE STIFFENERS
+                if (forming_mode == 2) {
+                    truss_flanges_3d(start_x, end_x, truss_count);
+                } else if (forming_mode == 1) {
+                    intersection() {
+                        bead_lines_3d_outer(start_x, end_x, section_hole_count, progression);
+                        translate([0, 0, -chord_length])
+                            linear_extrude(chord_length*2) web_2d(start_x, end_x);
+                    }
+                }
+                // 3. THE PERIMETER FLANGE (Folded down 90 degrees)
+                perimeter_flange_3d(start_x, end_x);
+            } // end inner union
+            
+            // 4. THE BEAD CUTOUTS (Only if mode 1) - SUBTRACTED from the union above
+            if (forming_mode == 1) {
+                bead_lines_3d_inner(start_x, end_x, section_hole_count, progression);
+            }
+            // 5. RELIEF GAPS (Cut through the perimeter flange)
+            relief_gaps_cuts_3d(start_x, end_x);
+        } // end difference
+        
+        // Hole lips are ADDITIVE, so they go in the outer union but outside the difference
+        if (forming_mode == 1) {
+            hole_lips_3d(start_x, end_x, section_hole_count, progression);
+        }
+    } // end outer union
+} // end module
+
+// ==========================================
+// FEATURE MODULES
+// ==========================================
+
+module perimeter_flange_3d(start_x, end_x) {
+    translate([0, 0, -flange_length])
+    linear_extrude(flange_length + metal_thickness)
+    difference() {
+        web_2d(start_x, end_x);
+        offset(delta=-metal_thickness) web_2d(start_x, end_x);
+    }
+}
+
+// Helper for Stadium (Straight Edges) 2D Shape
+module stadium_2d(d, stretch, orientation=1) {
+    if (stretch <= 1.001) {
+        circle(d=d);
+    } else {
+        offset_val = (d * stretch - d) / 2;
+        hull() {
+            if (orientation == 1) { // Horizontal
+                translate([-offset_val, 0]) circle(d=d);
+                translate([offset_val, 0]) circle(d=d);
+            } else { // Vertical
+                translate([0, -offset_val]) circle(d=d);
+                translate([0, offset_val]) circle(d=d);
+            }
+        }
+    }
+}
+
+// Helper for Stadium (Straight Edges) 3D Flange Lip
+module stadium_3d_lip(d1, d2, h, stretch, orientation=1) {
+    if (stretch <= 1.001) {
+        cylinder(h=h, d1=d1, d2=d2);
+    } else {
+        offset_val = (d2 * stretch - d2) / 2;
+        hull() {
+            if (orientation == 1) { // Horizontal
+                translate([-offset_val, 0, 0]) cylinder(h=h, d1=d1, d2=d2);
+                translate([offset_val, 0, 0]) cylinder(h=h, d1=d1, d2=d2);
+            } else { // Vertical
+                translate([0, -offset_val, 0]) cylinder(h=h, d1=d1, d2=d2);
+                translate([0, offset_val, 0]) cylinder(h=h, d1=d1, d2=d2);
+            }
+        }
+    }
+}
+
+// Helper for True Oval (Elliptical) 3D Flange Lip
+module true_oval_3d_lip(d1, d2, h, stretch, orientation=1) {
+    sx = (orientation == 1) ? stretch : 1.0;
+    sy = (orientation == 2) ? stretch : 1.0;
+    scale([sx, sy, 1]) cylinder(h=h, d1=d1, d2=d2);
+}
+
+module place_holes_2d_flat(start_x, end_x, section_hole_count, progression) {
+layout = get_section_layout(start_x, end_x, section_hole_count, progression);
+for (hole = layout) {
+cx = hole[0];
+structural_dia = hole[1];
+nx = cx / chord_length;
+uy = get_upper_y(nx, airfoil_points) * chord_length;
+ly = get_lower_y(nx, airfoil_points) * chord_length;
+cy = (uy + ly) / 2;
+cut_dia = structural_dia - (2 * hole_flange_depth);
+stretch = (hole_shape >= 2) ? oval_stretch : 1.0;
+
+translate([cx, cy]) {
+    if (hole_shape == 3) {
+        // True Oval: Flat pattern must be an offset of the final ellipse to maintain constant flange width
+        sx = (oval_orientation == 1) ? stretch : 1.0;
+        sy = (oval_orientation == 2) ? stretch : 1.0;
+        offset(delta=-hole_flange_depth) scale([sx, sy]) circle(d=structural_dia);
+    } else if (hole_shape == 2) {
+        stadium_2d(d=cut_dia, stretch=stretch, orientation=oval_orientation);
+    } else {
+        circle(d=cut_dia);
+    }
+}
+}
+}
+
+module place_holes_3d_formed(start_x, end_x, section_hole_count, progression) {
+layout = get_section_layout(start_x, end_x, section_hole_count, progression);
+for (hole = layout) {
+cx = hole[0];
+structural_dia = hole[1];
+nx = cx / chord_length;
+uy = get_upper_y(nx, airfoil_points) * chord_length;
+ly = get_lower_y(nx, airfoil_points) * chord_length;
+cy = (uy + ly) / 2;
+stretch = (hole_shape >= 2) ? oval_stretch : 1.0;
+
+translate([cx, cy]) {
+    if (hole_shape == 3) {
+        sx = (oval_orientation == 1) ? stretch : 1.0;
+        sy = (oval_orientation == 2) ? stretch : 1.0;
+        scale([sx, sy]) circle(d=structural_dia);
+    } else if (hole_shape == 2) {
+        stadium_2d(d=structural_dia, stretch=stretch, orientation=oval_orientation);
+    } else {
+        circle(d=structural_dia);
+    }
+}
+}
+}
+
+module hole_lips_3d(start_x, end_x, section_hole_count, progression) {
+layout = get_section_layout(start_x, end_x, section_hole_count, progression);
+for (hole = layout) {
+cx = hole[0];
+structural_dia = hole[1];
+nx = cx / chord_length;
+uy = get_upper_y(nx, airfoil_points) * chord_length;
+ly = get_lower_y(nx, airfoil_points) * chord_length;
+cy = (uy + ly) / 2;
+cut_dia = structural_dia - (2 * hole_flange_depth);
+stretch = (hole_shape >= 2) ? oval_stretch : 1.0;
+
+translate([cx, cy, -hole_flange_depth]) {
+    if (hole_shape == 3) {
+        difference() {
+            true_oval_3d_lip(d1=cut_dia + 2*metal_thickness, d2=structural_dia + 2*metal_thickness, h=hole_flange_depth + metal_thickness, stretch=stretch, orientation=oval_orientation);
+            translate([0, 0, -0.01])
+            true_oval_3d_lip(d1=cut_dia, d2=structural_dia, h=hole_flange_depth + metal_thickness + 0.02, stretch=stretch, orientation=oval_orientation);
+        }
+    } else if (hole_shape == 2) {
+        difference() {
+            stadium_3d_lip(d1=cut_dia + 2*metal_thickness, d2=structural_dia + 2*metal_thickness, h=hole_flange_depth + metal_thickness, stretch=stretch, orientation=oval_orientation);
+            translate([0, 0, -0.01])
+            stadium_3d_lip(d1=cut_dia, d2=structural_dia, h=hole_flange_depth + metal_thickness + 0.02, stretch=stretch, orientation=oval_orientation);
+        }
+    } else {
+        difference() {
+            cylinder(h=hole_flange_depth + metal_thickness, d1=cut_dia + 2*metal_thickness, d2=structural_dia + 2*metal_thickness);
+            translate([0, 0, -0.01])
+            cylinder(h=hole_flange_depth + metal_thickness + 0.02, d1=cut_dia, d2=structural_dia);
+        }
+    }
+}
+}
+}
+
+module bead_lines_3d_outer(start_x, end_x, count, progression) {
+    layout = get_section_layout(start_x, end_x, count, progression);
+    if (len(layout) > 1) {
+        stretch_h = (hole_shape >= 2 && oval_orientation == 1) ? oval_stretch : 1.0;
+        for (i = [0 : len(layout) - 2]) {
+            h1 = layout[i];
+            h2 = layout[i+1];
+            edge1 = h1[0] + (h1[1] * stretch_h) / 2;
+            edge2 = h2[0] - (h2[1] * stretch_h) / 2;
+            single_bead_outer((edge1 + edge2) / 2);
+        }
+    } else if (count > 1) {
+        // Fallback if holes didn't fit but count > 1
+        span = end_x - start_x;
+        for (i =[1 : count - 1]) {
+            single_bead_outer(start_x + i * (span / count));
+        }
+    } else if (count == 0) {
+        single_bead_outer((start_x + end_x) / 2);
+    }
+}
+
+module bead_lines_3d_inner(start_x, end_x, count, progression) {
+    layout = get_section_layout(start_x, end_x, count, progression);
+    if (len(layout) > 1) {
+        stretch_h = (hole_shape >= 2 && oval_orientation == 1) ? oval_stretch : 1.0;
+        for (i =[0 : len(layout) - 2]) {
+            h1 = layout[i];
+            h2 = layout[i+1];
+            edge1 = h1[0] + (h1[1] * stretch_h) / 2;
+            edge2 = h2[0] - (h2[1] * stretch_h) / 2;
+            single_bead_inner((edge1 + edge2) / 2);
+        }
+    } else if (count > 1) {
+        span = end_x - start_x;
+        for (i =[1 : count - 1]) {
+            single_bead_inner(start_x + i * (span / count));
+        }
+    } else if (count == 0) {
+        single_bead_inner((start_x + end_x) / 2);
+    }
+}
+
+module bead_lines_2d_stencil(start_x, end_x, count, progression) {
+    layout = get_section_layout(start_x, end_x, count, progression);
+    if (len(layout) > 1) {
+        stretch_h = (hole_shape >= 2 && oval_orientation == 1) ? oval_stretch : 1.0;
+        for (i = [0 : len(layout) - 2]) {
+            h1 = layout[i];
+            h2 = layout[i+1];
+            edge1 = h1[0] + (h1[1] * stretch_h) / 2;
+            edge2 = h2[0] - (h2[1] * stretch_h) / 2;
+            place_single_stencil((edge1 + edge2) / 2);
+        }
+    } else if (count > 1) {
+        span = end_x - start_x;
+        for (i =[1 : count - 1]) {
+            place_single_stencil(start_x + i * (span / count));
+        }
+    } else if (count == 0) {
+        place_single_stencil((start_x + end_x) / 2);
+    }
+}
+
+module single_bead_outer(cx) {
+nx = cx / chord_length;
+uy = get_upper_y(nx, airfoil_points) * chord_length;
+ly = get_lower_y(nx, airfoil_points) * chord_length;
+bead_margin = edge_margin + (bead_width / 2);
+bead_top = uy - bead_margin;
+bead_bottom = ly + bead_margin;
+bead_length = bead_top - bead_bottom;
+if (bead_length > bead_width) {
+translate([cx, bead_bottom, metal_thickness])
+scale([1, 1, 0.5])
+difference() {
+hull() {
+translate([0, bead_width/2, 0]) sphere(d=bead_width + 4*metal_thickness);
+translate([0, bead_length - bead_width/2, 0]) sphere(d=bead_width + 4*metal_thickness);
+}
+translate([-(bead_width + 4*metal_thickness), -(bead_width + 4*metal_thickness), 0])
+cube([(bead_width + 4*metal_thickness)*2, bead_length + (bead_width + 4*metal_thickness)*2, bead_width + 4*metal_thickness]);
+}
+}
+}
+
+module single_bead_inner(cx) {
+nx = cx / chord_length;
+uy = get_upper_y(nx, airfoil_points) * chord_length;
+ly = get_lower_y(nx, airfoil_points) * chord_length;
+bead_margin = edge_margin + (bead_width / 2);
+bead_top = uy - bead_margin;
+bead_bottom = ly + bead_margin;
+bead_length = bead_top - bead_bottom;
+if (bead_length > bead_width) {
+translate([cx, bead_bottom, metal_thickness + 0.001])
+scale([1, 1, 0.5])
+difference() {
+hull() {
+translate([0, bead_width/2, 0]) sphere(d=bead_width);
+translate([0, bead_length - bead_width/2, 0]) sphere(d=bead_width);
+}
+translate([-bead_width, -bead_width, 0])
+cube([bead_width*2, bead_length + bead_width*2, bead_width]);
+}
+}
+}
+
+module place_single_stencil(cx) {
+nx = cx / chord_length;
+uy = get_upper_y(nx, airfoil_points) * chord_length;
+ly = get_lower_y(nx, airfoil_points) * chord_length;
+bead_margin = edge_margin + (bead_width / 2);
+bead_top = uy - bead_margin;
+bead_bottom = ly + bead_margin;
+if (bead_top > bead_bottom) {
+translate([cx - 0.005, bead_bottom]) square([0.01, bead_top - bead_bottom]);
+}
+}
+
+function get_notch_xs(x, step, end_x, res=[]) =
+x > end_x ? res :
+let(
+current_step = (x < chord_length * 0.05) ? step / 3 :
+(x < chord_length * 0.15) ? step / 2 : step
+)
+get_notch_xs(x + current_step, step, end_x, concat(res,[x]));
+
+module relief_gaps_cuts(start_x, end_x) {
+xs = get_notch_xs(gap_spacing/3, gap_spacing, chord_length - gap_spacing/2);
+for (x = xs) {
+if (x >= start_x && x <= end_x) {
+nx = x / chord_length;
+uy = get_upper_y(nx, airfoil_points) * chord_length;
+ly = get_lower_y(nx, airfoil_points) * chord_length;
+un = upper_normal(nx, airfoil_points);
+ln = lower_normal(nx, airfoil_points);
+if (uy != 0 && ly != 0) {
+translate([x, uy]) rotate(un - 90) translate([0, flange_length]) notch_shape();
+translate([x, ly]) rotate(ln - 90) translate([0, flange_length]) notch_shape();
+}
+}
+}
+}
+
+module relief_gaps_cuts_3d(start_x, end_x) {
+xs = get_notch_xs(gap_spacing/3, gap_spacing, chord_length - gap_spacing/2);
+for (x = xs) {
+if (x >= start_x && x <= end_x) {
+nx = x / chord_length;
+uy = get_upper_y(nx, airfoil_points) * chord_length;
+ly = get_lower_y(nx, airfoil_points) * chord_length;
+un = upper_normal(nx, airfoil_points);
+ln = lower_normal(nx, airfoil_points);
+if (uy != 0 && ly != 0) {
+translate([x, uy, 0]) rotate([0, 0, un - 90]) notch_cutter_3d();
+translate([x, ly, 0]) rotate([0, 0, ln - 90]) notch_cutter_3d();
+}
+}
+}
+}
+
+module notch_shape() {
+union() {
+polygon([[-gap_width/2, 10],[gap_width/2, 10],[gap_width/2, 0],[0, -gap_depth],[-gap_width/2, 0]]);
+translate([0, -gap_depth]) circle(d=stress_relief_hole);
+}
+}
+
+module notch_cutter_3d() {
+    // Cutter is positioned at the edge of the web, pointing down the flange
+    translate([0, 0, -flange_length])
+    rotate([90, 0, 0])
+    translate([0, 0, -2])
+    linear_extrude(4)
+    union() {
+        polygon([[-gap_width/2, -1],[gap_width/2, -1],
+            [gap_width/2, 0],[0, gap_depth],[-gap_width/2, 0]
+        ]);
+        translate([0, gap_depth]) circle(d=stress_relief_hole);
+    }
+}
+
+// ==========================================
+// TRUSS MODULES (Stamped Truss Logic)
+// ==========================================
+
+module safe_area_2d(start_x, end_x) {
+    w = end_x - start_x - 2*edge_margin;
+    if (w > 0) {
+        intersection() {
+            offset(delta=-edge_margin) airfoil_polygon();
+            translate([start_x + edge_margin, -chord_length])
+                square([w, chord_length * 2]);
+        }
+    }
+}
+
+function get_truss_points(start_x, end_x, count) =
+    let(
+        X_min = start_x + edge_margin,
+        X_max = end_x - edge_margin,
+        step = (count > 0) ? (X_max - X_min) / count : 0
+    )[for (i=[0:count])
+        let(
+            x = X_min + i * step,
+            nx = x / chord_length,
+            uy = get_upper_y(nx, airfoil_points) * chord_length - edge_margin,
+            ly = get_lower_y(nx, airfoil_points) * chord_length + edge_margin,
+            y = (i % 2 == 0) ? uy : ly
+        )[x, y]
+    ];
+
+module thick_polyline(pts, width) {
+    if (len(pts) > 1) {
+        for (i=[0:len(pts)-2]) {
+            hull() {
+                translate(pts[i]) circle(d=width);
+                translate(pts[i+1]) circle(d=width);
+            }
+        }
+    }
+}
+
+module truss_strip_blue(start_x, end_x, count) {
+    pts = get_truss_points(start_x, end_x, count);
+    if (count > 0) {
+        thick_polyline(pts, truss_width);
+    }
+}
+
+module die_cutouts(start_x, end_x, count) {
+    offset(r=truss_corner_roundness)
+    offset(r=-truss_corner_roundness)
+    difference() {
+        safe_area_2d(start_x, end_x);
+        truss_strip_blue(start_x, end_x, count);
+    }
+}
+
+// Generates flanges ONLY along the straight diagonal channels, leaving corners flat
+module generated_truss_flanges_2d(start_x, end_x, count, f_width) {
+    pts = get_truss_points(start_x, end_x, count);
+    if (count > 0 && len(pts) > 1) {
+        difference() {
+            // 1. Create the flanges along the straight truss segments
+            intersection() {
+                die_cutouts(start_x, end_x, count); // Ensure they stay perfectly inside the cutout
+                for (i=[0:len(pts)-2]) {
+                    p1 = pts[i];
+                    p2 = pts[i+1];
+                    dx = p2[0] - p1[0];
+                    dy = p2[1] - p1[1];
+                    length = sqrt(dx*dx + dy*dy);
+                    angle = atan2(dy, dx);
+                    
+                    translate([p1[0], p1[1]])
+                    rotate(angle)
+                    union() {
+                        translate([0, truss_width/2])
+                        square([length, f_width]);
+                        translate([0, -truss_width/2 - f_width])
+                        square([length, f_width]);
+                    }
+                }
+            }
+            // 2. Subtract generous circles at the vertices to ensure the rounded corners are completely flat
+            for (p = pts) {
+                translate(p) circle(r = truss_width/2 + truss_corner_roundness * 2.5);
+            }
+        }
+    }
+}
+
+module flat_truss_flanges_2d(start_x, end_x, count) {
+    generated_truss_flanges_2d(start_x, end_x, count, truss_flange_depth);
+}
+
+module straight_truss_flanges_2d(start_x, end_x, count) {
+    generated_truss_flanges_2d(start_x, end_x, count, metal_thickness);
+}
+
+module flat_cutouts(start_x, end_x, count) {
+    difference() {
+        die_cutouts(start_x, end_x, count);
+        // Subtracting the flat flanges creates the perfect scalloped relief cut in the flat pattern
+        flat_truss_flanges_2d(start_x, end_x, count);
+    }
+}
+
+module truss_flanges_3d(start_x, end_x, count) {
+    translate([0, 0, -truss_flange_depth])
+    linear_extrude(truss_flange_depth + metal_thickness)
+    straight_truss_flanges_2d(start_x, end_x, count);
+}
+
+// ==========================================
+// MATHEMATICAL HELPER FUNCTIONS
+// ==========================================
+function get_best_die(max_structural_d, dies, i=0, best=0) =
+i >= len(dies) ? best :
+let( structural_die = dies[i] + (2 * hole_flange_depth) )
+(structural_die <= max_structural_d && structural_die > best) ?
+get_best_die(max_structural_d, dies, i+1, structural_die) :
+get_best_die(max_structural_d, dies, i+1, best);
+
+function recursive_max_idx(list, i=0, m=-1, mi=0) =
+i >= len(list) ? mi : (list[i] > m ? recursive_max_idx(list, i+1, list[i], i) : recursive_max_idx(list, i+1, m, mi));
+
+function get_target_dias(count, progression) =
+count <= 0 ?[] :
+let(
+max_d = hole_diameter,
+min_d = min_structural_dia
+)
+count == 1 ? [max_d] :
+progression == "ascending" ?[for (i =[0 : count-1]) min_d + (max_d - min_d) * (i / max(1, count-1))] :
+progression == "descending" ?[for (i =[0 : count-1]) max_d - (max_d - min_d) * (i / max(1, count-1))] : [for (i =[0 : count-1]) max_d];
+
+function get_section_layout(start_x, end_x, count, progression) =
+count <= 0 ?[] :
+let(
+target_dias = get_target_dias(count, progression),
+span = end_x - start_x,
+spacing_limit = (span / count) - (2 * edge_margin),
+stretch_h = (hole_shape >= 2 && oval_orientation == 1) ? oval_stretch : 1.0,
+stretch_v = (hole_shape >= 2 && oval_orientation == 2) ? oval_stretch : 1.0,
+centers = (count == 1) ?[let(
+samples =[for (s =[0:30]) start_x + (s/30)*span],
+fits =[for (sx = samples)
+let(
+nx = sx / chord_length,
+uy = get_upper_y(nx, airfoil_points) * chord_length,
+ly = get_lower_y(nx, airfoil_points) * chord_length,
+r_h = ((uy - ly) - 2 * edge_margin) / 2,
+r_l = (sx - start_x) - edge_margin,
+r_r = (end_x - sx) - edge_margin,
+final_r = min(r_h / stretch_v, r_l / stretch_h, r_r / stretch_h)
+) final_r * 2
+],
+best_idx = recursive_max_idx(fits)
+) samples[best_idx]] :[for (i =[0 : count-1]) start_x + (i + 0.5) * (span / count)],
+validated =[for (cx = centers)
+let(
+nx = cx / chord_length,
+uy = get_upper_y(nx, airfoil_points) * chord_length,
+ly = get_lower_y(nx, airfoil_points) * chord_length,
+r_h = ((uy - ly) - 2 * edge_margin) / 2,
+r_l = (cx - start_x) - edge_margin,
+r_r = (end_x - cx) - edge_margin,
+idx = (count == 1) ? 0 : ( (cx - start_x) / (span / count) ),
+target_d = target_dias[floor(max(0, min(count-1, idx)))],
+raw_d = min(target_d, (r_h * 2) / stretch_v, (r_l * 2) / stretch_h, (r_r * 2) / stretch_h, spacing_limit / stretch_h),
+final_d = get_best_die(raw_d, available_cut_dies)
+)
+final_d > 0 ? [cx, final_d] : [cx, 0]
+],
+final_layout = (count == 1 && len(validated) > 0) ?[let(
+cx = validated[0][0],
+nx = cx / chord_length,
+uy = get_upper_y(nx, airfoil_points) * chord_length,
+ly = get_lower_y(nx, airfoil_points) * chord_length,
+r_h = ((uy - ly) - 2 * edge_margin) / 2,
+r_l = (cx - start_x) - edge_margin,
+r_r = (end_x - cx) - edge_margin,
+raw_d_fit = min(target_dias[0], (r_h * 2) / stretch_v, (r_l * 2) / stretch_h, (r_r * 2) / stretch_h),
+d_fit = get_best_die(raw_d_fit, available_cut_dies)
+)[cx, d_fit]] :[for (h = validated) if (h[1] > 0) h]
+)
+final_layout;
+
+function interpolate(x, p1, p2) =
+p1[0] == p2[0] ? p1[1] : p1[1] + (p2[1] - p1[1]) * (x - p1[0]) / (p2[0] - p1[0]);
+
+function get_all_y(x, pts, i=0, results=[]) =
+i >= len(pts)-1 ? results :
+((pts[i][0] >= x && pts[i+1][0] <= x) || (pts[i][0] <= x && pts[i+1][0] >= x)) ?
+get_all_y(x, pts, i+1, concat(results,[interpolate(x, pts[i], pts[i+1])])) :
+get_all_y(x, pts, i+1, results);
+
+function get_upper_y(x, pts) = let(res = get_all_y(x, pts)) len(res) > 0 ? res[0] : 0;
+function get_lower_y(x, pts) = let(res = get_all_y(x, pts)) len(res) > 0 ? res[len(res)-1] : 0;
+
+function upper_normal(x, pts, dx=0.001) =
+let (x1 = max(0, x - dx), x2 = min(1, x + dx), y1 = get_upper_y(x1, pts), y2 = get_upper_y(x2, pts)) 
+atan2(y2 - y1, (x2 - x1)) + 90;
+
+function lower_normal(x, pts, dx=0.001) =
+let (x1 = max(0, x - dx), x2 = min(1, x + dx), y1 = get_lower_y(x1, pts), y2 = get_lower_y(x2, pts)) 
+atan2(y2 - y1, (x2 - x1)) - 90;
