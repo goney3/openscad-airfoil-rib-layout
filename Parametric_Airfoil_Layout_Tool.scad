@@ -29,6 +29,8 @@ available_cut_dies =[2.0, 3.0, 4.0, 5.0];
 chord_length = 51.0;
 // Metal thickness (e.g., 0.016, 0.020, 0.025)
 metal_thickness = 0.016; //[0.001:0.001:0.250]
+// Inside bend radius for formed flanges
+bend_radius = 0.032; //[0.001:0.001:0.250]
 // Width of the flange added around the perimeter and along spars
 flange_length = 0.75;
 
@@ -260,49 +262,72 @@ bead_lines_2d_stencil(start_x, end_x, section_hole_count, progression);
 }
 
 module build_section_3d(start_x, end_x, section_hole_count, progression, truss_count) {
+    R = bend_radius;
+    t = metal_thickness;
+    
     union() {
         difference() {
             union() {
-                // 1. THE BASE WEB
-                linear_extrude(metal_thickness) {
+                // 1. UNIFIED WEB AND BENDS
+                formed_bends_3d(start_x, end_x, section_hole_count, progression, truss_count);
+                
+                // 2. STRAIGHT FLANGES
+                // Perimeter Straight Flange
+                if (flange_length > R) {
+                    translate([0, 0, -flange_length])
+                    linear_extrude(flange_length - R)
                     difference() {
-                        web_2d(start_x, end_x);
-                        if (forming_mode == 1) {
-                            place_holes_3d_formed(start_x, end_x, section_hole_count, progression);
-                        }
-                        if (forming_mode == 2) {
-                            die_cutouts(start_x, end_x, truss_count);
-                        }
+                        offset(delta=0) web_2d(start_x, end_x);
+                        offset(delta=-t) web_2d(start_x, end_x);
                     }
                 }
-                // 2. THE STIFFENERS
-                if (forming_mode == 2) {
-                    truss_flanges_3d(start_x, end_x, truss_count);
-                } else if (forming_mode == 1) {
+                
+                // Truss Straight Flanges
+                if (forming_mode == 2 && truss_flange_depth > R) {
+                    translate([0, 0, -truss_flange_depth])
+                    linear_extrude(truss_flange_depth - R)
+                    difference() {
+                        offset(delta=t) die_cutouts(start_x, end_x, truss_count);
+                        offset(delta=0) die_cutouts(start_x, end_x, truss_count);
+                    }
+                }
+                
+                // Bead Lines (Mode 1)
+                if (forming_mode == 1) {
                     intersection() {
                         bead_lines_3d_outer(start_x, end_x, section_hole_count, progression);
                         translate([0, 0, -chord_length])
                             linear_extrude(chord_length*2) web_2d(start_x, end_x);
                     }
                 }
-                // 3. THE PERIMETER FLANGE (Folded down 90 degrees)
-                perimeter_flange_3d(start_x, end_x);
             } // end inner union
             
-            // 4. THE BEAD CUTOUTS (Only if mode 1) - SUBTRACTED from the union above
+            // 3. SUBTRACTIONS
+            // Node cutters for the truss flange corners
+            if (forming_mode == 2) {
+                let(all_nodes = get_cutout_bowls(start_x, end_x, truss_count))
+                for (node = all_nodes) {
+                    translate([node[0], node[1], 0])
+                    node_cutter();
+                }
+            }
+            
+            // Bead Cutouts
             if (forming_mode == 1) {
                 bead_lines_3d_inner(start_x, end_x, section_hole_count, progression);
             }
-            // 5. RELIEF GAPS (Cut through the perimeter flange)
+            
+            // Relief Gaps
             relief_gaps_cuts_3d(start_x, end_x);
+            
         } // end difference
         
-        // Hole lips are ADDITIVE, so they go in the outer union but outside the difference
+        // Hole lips
         if (forming_mode == 1) {
             hole_lips_3d(start_x, end_x, section_hole_count, progression);
         }
-    } // end outer union
-} // end module
+    }
+}
 
 // ==========================================
 // FEATURE MODULES
@@ -619,15 +644,67 @@ translate([0, -gap_depth]) circle(d=stress_relief_hole);
 
 module notch_cutter_3d() {
     // Cutter is positioned at the edge of the web, pointing down the flange
-    translate([0, 0, -flange_length])
+    translate([0, 0, -flange_length - 1])
     rotate([90, 0, 0])
-    // Limit the extrusion to exactly the thickness of the perimeter flange to prevent slicing internal truss flanges
-    translate([0, 0, -0.1])
-    linear_extrude(metal_thickness + 0.2)
+    // Limit the extrusion to cut through the flange and the bend radius
+    translate([0, 0, -(bend_radius + metal_thickness + 0.5)])
+    linear_extrude(bend_radius + metal_thickness + 1.0)
     union() {
         polygon([[-gap_width/2, -1],[gap_width/2, -1],[gap_width/2, 0],[0, gap_depth],[-gap_width/2, 0]
         ]);
         translate([0, gap_depth]) circle(d=stress_relief_hole);
+    }
+}
+
+module formed_bends_3d(start_x, end_x, section_hole_count, progression, truss_count) {
+    R = bend_radius;
+    t = metal_thickness;
+    steps = 6; // Number of layers to approximate the smooth bend
+    step_z = (R + t) / steps;
+    
+    for (i = [0 : steps - 1]) {
+        z1 = -R + i * step_z;
+        z_mid = z1 + step_z / 2;
+        z_offset = z_mid + R;
+        
+        dx_outer = sqrt(max(0, pow(R+t, 2) - pow(z_offset, 2)));
+        dx_inner = sqrt(max(0, pow(R, 2) - pow(z_offset, 2)));
+        
+        delta_perim_outer = -(R+t) + dx_outer;
+        delta_perim_inner = -(R+t) + dx_inner;
+        
+        delta_truss_outer = (R+t) - dx_outer;
+        delta_truss_inner = (R+t) - dx_inner;
+        
+        translate([0, 0, z1])
+        linear_extrude(step_z)
+        if (z_mid >= 0) {
+            // The Flat Web (Top half of the bend)
+            difference() {
+                offset(delta=delta_perim_outer) web_2d(start_x, end_x);
+                if (forming_mode == 2) {
+                    offset(delta=delta_truss_outer) die_cutouts(start_x, end_x, truss_count);
+                } else if (forming_mode == 1) {
+                    place_holes_2d_flat(start_x, end_x, section_hole_count, progression);
+                }
+            }
+        } else {
+            // The Curved Flanges (Bottom half of the bend)
+            union() {
+                // Perimeter Flange Bend
+                difference() {
+                    offset(delta=delta_perim_outer) web_2d(start_x, end_x);
+                    offset(delta=delta_perim_inner) web_2d(start_x, end_x);
+                }
+                // Truss Flanges Bend
+                if (forming_mode == 2) {
+                    difference() {
+                        offset(delta=delta_truss_inner) die_cutouts(start_x, end_x, truss_count);
+                        offset(delta=delta_truss_outer) die_cutouts(start_x, end_x, truss_count);
+                    }
+                }
+            }
+        }
     }
 }
 
