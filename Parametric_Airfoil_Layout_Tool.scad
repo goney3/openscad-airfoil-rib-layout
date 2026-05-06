@@ -1,6 +1,11 @@
 // Parametric_Airfoil_Layout_Tool.scad
 // 2D/3D Aircraft Rib Template Generator (Inches)
 
+// DISCLAIMER:
+// This tool provides mathematical layouts based on standard engineering formulas. 
+// While it includes safety checks for 6061-T6 aluminum, it is the builder's responsibility 
+// to verify the structural suitability of their final wing design for their specific aircraft.
+
 /*[Output Settings] */
 // 1 = 3D Preview (Formed Part), 2 = 3D Preview (Flat Pattern), 3 = 2D DXF Export (Pure 2D)
 render_mode = 1; //[1:3D Preview (Formed Part), 2:3D Preview (Flat Pattern), 3:2D DXF Export (Pure 2D)]
