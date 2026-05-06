@@ -48,11 +48,13 @@ explode_distance = 2.0; //[0:0.1:10]
 /*[Truss Settings] */
 // Width of the flat top of the truss (Blue area)
 truss_width = 0.75;
-// Depth of the flange bent down around the cutouts (Red area)
+// Depth of the flange bent down along the straight truss segments
 truss_flange_depth = 0.25;
+// Depth of the continuous 90-degree flange around the corners and perimeter (0 = off)
+truss_lip_depth = 0.125; //[0.0:0.001:0.5]
 // Radius for blending the truss flange ends into the web (Concave Fillet)
-truss_blend_radius = 0.5; //[0.0:0.05:2.0]
-// Corner roundness for the cutouts (Must be >= truss_flange_depth)
+truss_blend_radius = 0.25; //[0.0:0.05:2.0]
+// Corner roundness for the cutouts (Must be >= truss_lip_depth)
 truss_corner_roundness = 0.375;
 // Number of diagonal trusses in the Leading Edge section
 leading_truss_count = 2;
@@ -156,8 +158,8 @@ actual_flat_margin = edge_margin - (bead_width / 2);
 assert(actual_flat_margin >= 0.375,
 str("CRITICAL ERROR: Flat margin between bead and flange is only ", actual_flat_margin, "\". It must be at least 0.375\" to prevent overlapping work-hardened zones in 6061-T6. Increase 'edge_margin' or decrease 'bead_width'.")
 );
-assert(truss_corner_roundness >= truss_flange_depth,
-str("CRITICAL ERROR: truss_corner_roundness (", truss_corner_roundness, ") must be >= truss_flange_depth (", truss_flange_depth, ") to prevent sharp corners in the flat pattern.")
+assert(truss_corner_roundness >= truss_lip_depth,
+str("CRITICAL ERROR: truss_corner_roundness (", truss_corner_roundness, ") must be >= truss_lip_depth (", truss_lip_depth, ") to prevent sharp corners in the flat pattern.")
 );
 
 module visual_warnings() {
@@ -450,7 +452,7 @@ module bead_lines_3d_outer(start_x, end_x, count, progression) {
     layout = get_section_layout(start_x, end_x, count, progression);
     if (len(layout) > 1) {
         stretch_h = (hole_shape >= 2 && oval_orientation == 1) ? oval_stretch : 1.0;
-        for (i = [0 : len(layout) - 2]) {
+        for (i =[0 : len(layout) - 2]) {
             h1 = layout[i];
             h2 = layout[i+1];
             edge1 = h1[0] + (h1[1] * stretch_h) / 2;
@@ -619,11 +621,11 @@ module notch_cutter_3d() {
     // Cutter is positioned at the edge of the web, pointing down the flange
     translate([0, 0, -flange_length])
     rotate([90, 0, 0])
-    translate([0, 0, -2])
-    linear_extrude(4)
+    // Limit the extrusion to exactly the thickness of the perimeter flange to prevent slicing internal truss flanges
+    translate([0, 0, -0.1])
+    linear_extrude(metal_thickness + 0.2)
     union() {
-        polygon([[-gap_width/2, -1],[gap_width/2, -1],
-            [gap_width/2, 0],[0, gap_depth],[-gap_width/2, 0]
+        polygon([[-gap_width/2, -1],[gap_width/2, -1],[gap_width/2, 0],[0, gap_depth],[-gap_width/2, 0]
         ]);
         translate([0, gap_depth]) circle(d=stress_relief_hole);
     }
@@ -686,185 +688,170 @@ module die_cutouts(start_x, end_x, count) {
     }
 }
 
-// Generates the 2D flat pattern for the concave fillet taper using a smooth S-curve
-module tapered_flange_2d(length, f_width) {
-    R_cut_circle = truss_width/2 + truss_corner_roundness * 2.5;
-    X_start = sqrt(max(0, R_cut_circle * R_cut_circle - (truss_width/2) * (truss_width/2)));
-    br = truss_blend_radius;
-    
-    if (length > 2 * X_start) {
-        actual_br = min(br, (length - 2 * X_start) / 2);
-        if (actual_br > 0) {
-            polygon(concat(
-                [[X_start, 0]],
-                [for (i = [0 : 5 : 180]) 
-                    let (
-                        t = i / 180,
-                        x = X_start + t * actual_br,
-                        y = f_width * (1 - cos(i)) / 2
-                    )
-                    [x, y]
-                ],
-                [[length - X_start - actual_br, f_width]],
-                [for (i = [0 : 5 : 180])
-                    let (
-                        t = i / 180,
-                        x = length - X_start - actual_br + t * actual_br,
-                        y = f_width * (1 + cos(i)) / 2
-                    )
-                    [x, y]
-                ],
-                [[length - X_start, 0]]
-            ));
-        } else {
-            polygon([
-                [X_start, 0],[X_start, f_width],
-                [length - X_start, f_width],[length - X_start, 0]
-            ]);
-        }
-    }
-}
+// --- Exact Corner Calculation Math ---
+function get_offset_line(A, B, d) =
+    let(
+        dir = B - A,
+        len = norm(dir),
+        nx = (len > 0) ? -dir[1] / len : 0,
+        ny = (len > 0) ?  dir[0] / len : 1,
+        P_off = A + [nx, ny] * d,
+        c_val = nx * P_off[0] + ny * P_off[1]
+    )[nx, ny, c_val];
 
-module flat_truss_flanges_2d(start_x, end_x, count) {
-    pts = get_truss_points(start_x, end_x, count);
-    if (count > 0 && len(pts) > 1) {
-        intersection() {
-            die_cutouts(start_x, end_x, count); 
-            for (i=[0:len(pts)-2]) {
-                p1 = pts[i];
-                p2 = pts[i+1];
-                dx = p2[0] - p1[0];
-                dy = p2[1] - p1[1];
-                length = sqrt(dx*dx + dy*dy);
-                angle = atan2(dy, dx);
+function intersect_lines(L1, L2) =
+    let(
+        det = L1[0] * L2[1] - L2[0] * L1[1]
+    )
+    (abs(det) < 1e-6) ?[0, 0] : 
+    [
+        (L1[2] * L2[1] - L2[2] * L1[1]) / det,
+        (L1[0] * L2[2] - L2[0] * L1[2]) / det
+    ];
+
+function get_cutout_bowls(start_x, end_x, count) =
+    let(
+        X_min = start_x + edge_margin,
+        X_max = end_x - edge_margin,
+        step = (count > 0) ? (X_max - X_min) / count : 0,
+        W = truss_width / 2,
+        R = truss_corner_roundness,
+        
+        pt_top_x = function(x_val)[x_val, get_upper_y(x_val / chord_length, airfoil_points) * chord_length - edge_margin],
+        pt_bot_x = function(x_val)[x_val, get_lower_y(x_val / chord_length, airfoil_points) * chord_length + edge_margin],
+        
+        // Use local tangents instead of secant lines to handle the highly curved leading edge
+        get_bot_tangent = function(x) let(
+            x1 = max(0, x - 0.05),
+            x2 = min(chord_length, x + 0.05)
+        ) get_offset_line(pt_bot_x(x1), pt_bot_x(x2), R),
+        
+        get_top_tangent = function(x) let(
+            x1 = max(0, x - 0.05),
+            x2 = min(chord_length, x + 0.05)
+        ) get_offset_line(pt_top_x(x2), pt_top_x(x1), R)
+    )
+    (count == 0) ? 
+    let(
+        L_left = get_offset_line(pt_top_x(X_min), pt_bot_x(X_min), R),
+        L_right = get_offset_line(pt_bot_x(X_max), pt_top_x(X_max), R),
+        L_top_left = get_top_tangent(X_min),
+        L_top_right = get_top_tangent(X_max),
+        L_bot_left = get_bot_tangent(X_min),
+        L_bot_right = get_bot_tangent(X_max),
+        
+        C_tl = intersect_lines(L_top_left, L_left),
+        C_bl = intersect_lines(L_bot_left, L_left),
+        C_br = intersect_lines(L_right, L_bot_right),
+        C_tr = intersect_lines(L_top_right, L_right)
+    )
+    (C_tl[0] <= C_tr[0] && C_bl[0] <= C_br[0] && C_bl[1] <= C_tl[1] && C_br[1] <= C_tr[1]) ? 
+    [C_tl, C_bl, C_br, C_tr] : []
+    :
+    [for (j = [0 : count])
+        let(
+            is_even = (j % 2 == 0),
+            
+            pt_top = function(i) pt_top_x(X_min + i * step),
+            pt_bot = function(i) pt_bot_x(X_min + i * step),
+            
+            // Corrected vector directions to ensure the offset always moves INTO the cutout
+            L_left = (j == 0) ? get_offset_line(pt_top_x(X_min), pt_bot_x(X_min), R) :
+                (is_even ? get_offset_line(pt_top(j), pt_bot(j-1), W + R) : 
+                           get_offset_line(pt_top(j-1), pt_bot(j), W + R)),
                 
-                translate([p1[0], p1[1]])
-                rotate(angle)
-                union() {
-                    translate([0, truss_width/2])
-                    tapered_flange_2d(length, truss_flange_depth);
-                    
-                    translate([0, -truss_width/2])
-                    scale([1, -1])
-                    tapered_flange_2d(length, truss_flange_depth);
-                }
-            }
-        }
-    }
-}
+            L_right = (j == count) ? get_offset_line(pt_bot_x(X_max), pt_top_x(X_max), R) :
+                (is_even ? get_offset_line(pt_bot(j+1), pt_top(j), W + R) : 
+                           get_offset_line(pt_bot(j), pt_top(j+1), W + R)),
+                
+            x_left = (j == 0) ? X_min : X_min + (j - 1) * step,
+            x_right = (j == count) ? X_max : X_min + (j + 1) * step,
+            
+            L_horiz_left = is_even ? get_bot_tangent(x_left) : get_top_tangent(x_left),
+            L_horiz_right = is_even ? get_bot_tangent(x_right) : get_top_tangent(x_right),
+                
+            C1 = intersect_lines(L_left, L_right),
+            C2 = intersect_lines(L_horiz_left, L_left),
+            C3 = intersect_lines(L_right, L_horiz_right),
+            
+            // Validation check: If the cutout was destroyed by the corner rounding offset, the triangle will invert.
+            valid_y = is_even ? (C1[1] >= C2[1] - 0.01 && C1[1] >= C3[1] - 0.01) : (C1[1] <= C2[1] + 0.01 && C1[1] <= C3[1] + 0.01),
+            valid_x = C2[0] <= C3[0] + 0.01
+        )
+        // Only yield the bowls if the cutout actually exists
+        if (valid_y && valid_x) 
+            for (C = [C1, C2, C3]) C
+    ];
 
-module straight_truss_flanges_2d(start_x, end_x, count) {
-    pts = get_truss_points(start_x, end_x, count);
-    if (count > 0 && len(pts) > 1) {
-        difference() {
+// Generates the 2D flat pattern by unrolling the 3D scalloped flange layer by layer
+module flat_cutouts(start_x, end_x, count) {
+    all_nodes = get_cutout_bowls(start_x, end_x, count);
+    
+    R_flat = truss_corner_roundness;
+    taper_len = truss_blend_radius;
+    steps = 15;
+    
+    union() {
+        // Base hole: deepest flange, smallest hole
+        offset(delta=-truss_flange_depth) die_cutouts(start_x, end_x, count);
+        
+        // Add concentric rings to smoothly expand the hole near the nodes
+        for (i=[0:steps-1]) {
+            let(
+                t = i/(steps-1), // 0 to 1
+                z = truss_flange_depth - (truss_flange_depth - truss_lip_depth) * (1 - cos(t * 180))/2,
+                r = R_flat + taper_len * (1 - t)
+            )
             intersection() {
-                die_cutouts(start_x, end_x, count);
-                for (i=[0:len(pts)-2]) {
-                    p1 = pts[i];
-                    p2 = pts[i+1];
-                    dx = p2[0] - p1[0];
-                    dy = p2[1] - p1[1];
-                    length = sqrt(dx*dx + dy*dy);
-                    angle = atan2(dy, dx);
-                    
-                    translate([p1[0], p1[1]])
-                    rotate(angle)
-                    union() {
-                        translate([0, truss_width/2])
-                        square([length, metal_thickness]);
-                        translate([0, -truss_width/2 - metal_thickness])
-                        square([length, metal_thickness]);
+                offset(delta=-z) die_cutouts(start_x, end_x, count);
+                union() {
+                    for (node = all_nodes) {
+                        translate([node[0], node[1]]) circle(r=r);
                     }
                 }
             }
-            for (p = pts) {
-                translate(p) circle(r = truss_width/2 + truss_corner_roundness * 2.5);
-            }
         }
     }
 }
 
-module flat_cutouts(start_x, end_x, count) {
-    difference() {
-        die_cutouts(start_x, end_x, count);
-        // Subtracting the flat flanges creates the perfect scalloped relief cut in the flat pattern
-        flat_truss_flanges_2d(start_x, end_x, count);
-    }
-}
-
-// Generates the 3D Z-profile bounding box that perfectly matches the 2D S-curve
-module flange_z_profile_3d(length) {
-    R_cut_circle = truss_width/2 + truss_corner_roundness * 2.5;
-    X_start = sqrt(max(0, R_cut_circle * R_cut_circle - (truss_width/2) * (truss_width/2)));
-    br = truss_blend_radius;
+// A 3D bowl-shaped cutter that carves away the bottom of the flange at every node
+module node_cutter() {
+    R_flat = truss_corner_roundness; 
+    taper_len = truss_blend_radius;
     
-    if (length > 2 * X_start) {
-        actual_br = min(br, (length - 2 * X_start) / 2);
-        if (actual_br > 0) {
-            polygon(concat(
-                [[X_start, metal_thickness]],
-                [[X_start, 0]],
-                [for (i =[0 : 5 : 180]) 
-                    let (
-                        t = i / 180,
-                        x = X_start + t * actual_br,
-                        z = -truss_flange_depth * (1 - cos(i)) / 2
-                    )
-                    [x, z]
-                ],
-                [[length - X_start - actual_br, -truss_flange_depth]],
-                [for (i = [0 : 5 : 180])
-                    let (
-                        t = i / 180,
-                        x = length - X_start - actual_br + t * actual_br,
-                        z = -truss_flange_depth * (1 + cos(i)) / 2
-                    )
-                    [x, z]
-                ],
-                [[length - X_start, 0]],
-                [[length - X_start, metal_thickness]]
-            ));
-        } else {
-            polygon([
-                [X_start, metal_thickness],[X_start, -truss_flange_depth],[length - X_start, -truss_flange_depth],
-                [length - X_start, metal_thickness]
-            ]);
-        }
-    }
-}
-
-// Extrudes the Z-profile across the width of a single truss segment
-module tapered_3d_segment(p1, p2) {
-    dx = p2[0] - p1[0];
-    dy = p2[1] - p1[1];
-    length = sqrt(dx*dx + dy*dy);
-    angle = atan2(dy, dx);
-    
-    W = truss_width + metal_thickness * 4;
-    
-    translate([p1[0], p1[1], 0])
-    rotate([0, 0, angle])
-    translate([0, W/2, 0])
-    rotate([90, 0, 0])
-    linear_extrude(W)
-    flange_z_profile_3d(length);
+    rotate_extrude($fn=60)
+    polygon(concat(
+        [[0, -truss_flange_depth - 1]], 
+        [[R_flat + taper_len + 5, -truss_flange_depth - 1]], 
+        [[R_flat + taper_len + 5, -truss_flange_depth]],[for (i=[180:-5:0]) 
+            let(
+                t = i/180,
+                x = R_flat + t * taper_len,
+                z = -truss_flange_depth + (truss_flange_depth - truss_lip_depth) * (1 + cos(i))/2
+            )
+            [x, z]
+        ],
+        [[R_flat, -truss_lip_depth]], 
+        [[0, -truss_lip_depth]] 
+    ));
 }
 
 module truss_flanges_3d(start_x, end_x, count) {
-    pts = get_truss_points(start_x, end_x, count);
-    if (count > 0 && len(pts) > 1) {
-        intersection() {
-            // The straight vertical walls
-            translate([0, 0, -truss_flange_depth])
-            linear_extrude(truss_flange_depth + metal_thickness)
-            straight_truss_flanges_2d(start_x, end_x, count);
-            
-            // Intersected with the smooth S-curve bounding volumes
-            union() {
-                for (i=[0:len(pts)-2]) {
-                    tapered_3d_segment(pts[i], pts[i+1]);
-                }
-            }
+    all_nodes = get_cutout_bowls(start_x, end_x, count);
+    
+    difference() {
+        // The continuous vertical wall around the entire cutout (Full Depth)
+        translate([0, 0, -truss_flange_depth])
+        linear_extrude(truss_flange_depth + metal_thickness)
+        difference() {
+            offset(delta=metal_thickness) die_cutouts(start_x, end_x, count);
+            die_cutouts(start_x, end_x, count);
+        }
+        
+        // Subtract the node cutters to create the perfect scallops at every corner
+        for (node = all_nodes) {
+            translate([node[0], node[1], 0])
+            node_cutter();
         }
     }
 }
@@ -890,7 +877,7 @@ min_d = min_structural_dia
 )
 count == 1 ?[max_d] :
 progression == "ascending" ?[for (i =[0 : count-1]) min_d + (max_d - min_d) * (i / max(1, count-1))] :
-progression == "descending" ?[for (i =[0 : count-1]) max_d - (max_d - min_d) * (i / max(1, count-1))] : [for (i =[0 : count-1]) max_d];
+progression == "descending" ?[for (i =[0 : count-1]) max_d - (max_d - min_d) * (i / max(1, count-1))] :[for (i =[0 : count-1]) max_d];
 
 function get_section_layout(start_x, end_x, count, progression) =
 count <= 0 ?[] :
@@ -928,7 +915,7 @@ target_d = target_dias[floor(max(0, min(count-1, idx)))],
 raw_d = min(target_d, (r_h * 2) / stretch_v, (r_l * 2) / stretch_h, (r_r * 2) / stretch_h, spacing_limit / stretch_h),
 final_d = get_best_die(raw_d, available_cut_dies)
 )
-final_d > 0 ? [cx, final_d] :[cx, 0]
+final_d > 0 ?[cx, final_d] :[cx, 0]
 ],
 final_layout = (count == 1 && len(validated) > 0) ?[let(
 cx = validated[0][0],
