@@ -50,7 +50,7 @@ Once you have designed your rib and exported the DXF, you can use the exact same
 ## Usage Note
 
 > [!IMPORTANT]
-> This tool provides mathematical layouts based on standard engineering formulas. While it includes safety checks for **6061-T6 aluminum**, it is the builder's responsibility to verify the structural suitability of their final wing design for their specific aircraft.
+> This tool provides mathematical layouts based on standard engineering formulas. While it includes safety checks for **6061-T6 aluminum**, it is the builder's responsibility to verify the structural suitability of their final wing design for their specific aircraft. Please read the disclaimer found in the code!
 
 ---
 
