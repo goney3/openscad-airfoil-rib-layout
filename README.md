@@ -12,7 +12,7 @@ This OpenSCAD-based tool allows homebuilders to generate fully parametric wing r
 
 ## Key Features
 
-*   **Integrated Airfoil Library:** Quickly generate coordinates for common profiles including **NACA**, **Clark-Y**, and **UAK series**.
+*   **Integrated Airfoil Library:** Quickly generate coordinates for common profiles including 4-digit **NACA**, **Clark-Y**, and **UAK series**.
 *   **Fully Parametric Design:** Adjust chord length, spar placement, and material thickness in real-time.
 *   **"Stamped Truss" Mode:** Automatically generates a truss-style layout for maximum stiffness-to-weight ratio.
 *   **Safety-First Engineering:** Built-in assertions for **6061-T6 aluminum** ensure your design stays within safe fabrication limits, such as the **20t flange depth limit** and **8% material stretch** threshold.
